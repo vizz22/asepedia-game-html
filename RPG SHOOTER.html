@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>RPG Shooter</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <style>
+    body { margin: 0; background: black; overflow: hidden; }
+    .btn {
+      position: absolute; bottom: 20px; width: 80px; height: 80px;
+      border-radius: 50%; opacity: 0.6; z-index: 10; touch-action: none;
+    }
+    #fireBtn { right: 20px; background: red; }
+    #laserBtn { right: 110px; background: cyan; }
+    #rocketBtn { right: 200px; background: orange; }
+    #joystick { left: 20px; width: 100px; height: 100px; background: rgba(255,255,255,0.2); border-radius: 50%; }
+    #charSelect { position: absolute; width: 100%; height: 100%; background: black; color: white; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 20; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="charSelect">
+    <h2>Pilih Karakter</h2>
+    <button onclick="startGame('Falcon')">Falcon (Cepat, HP Rendah)</button>
+    <button onclick="startGame('Titan')">Titan (Lambat, HP Tinggi)</button>
+    <button onclick="startGame('Phantom')">Phantom (Laser Cepat)</button>
+  </div>
+  <div id="fireBtn" class="btn"></div>
+  <div id="laserBtn" class="btn"></div>
+  <div id="rocketBtn" class="btn"></div>
+  <div id="joystick" class="btn"></div>
+  <script>
+    let selectedChar = null;
+    let charStats = {
+      Falcon: { speed: 300, hp: 3, laserCooldown: 4000, rocketCooldown: 5000 },
+      Titan:  { speed: 200, hp: 5, laserCooldown: 4000, rocketCooldown: 3000 },
+      Phantom:{ speed: 250, hp: 3, laserCooldown: 2000, rocketCooldown: 5000 }
+    };
+
+    function startGame(charName) {
+      selectedChar = charName;
+      document.getElementById('charSelect').style.display = 'none';
+      new Phaser.Game(config);
+    }
+
+    const config = {
+      type: Phaser.AUTO,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      physics: { default: 'arcade', arcade: { debug: false } },
+      scene: { preload, create, update }
+    };
+
+    let player, bullets, enemies, lastFired = 0, laserReady = true, rocketReady = true;
+    let moveX = 0, moveY = 0, firePressed = false, laserPressed = false, rocketPressed = false;
+    let hp, exp = 0, level = 1, nextExp = 10;
+    let hpText, levelText, expBar, laserGroup, rocketGroup;
+
+    function preload() {
+      this.textures.generate('player', {
+        data: ['..2..', '.242.', '24442', '24442', '.242.'], pixelWidth: 6
+      });
+      this.textures.generate('bullet', { data: ['2'], pixelWidth: 4 });
+      this.textures.generate('laser', { data: ['2'], pixelWidth: 2 });
+      this.textures.generate('rocket', {
+        data: ['.5.', '555', '.5.'], pixelWidth: 4
+      });
+      this.textures.generate('enemy', {
+        data: ['.3.3.', '33333', '.3.3.'], pixelWidth: 6
+      });
+    }
+
+    function create() {
+      const scene = this;
+      let stats = charStats[selectedChar];
+      hp = stats.hp;
+
+      player = this.physics.add.sprite(config.width/2, config.height - 100, 'player').setCollideWorldBounds(true);
+      player.speed = stats.speed; // Set player speed
+
+      bullets = this.physics.add.group({ classType: Phaser.Physics.Arcade.Image, runChildUpdate: true });
+      laserGroup = this.physics.add.group();
+      rocketGroup = this.physics.add.group();
+      enemies = this.physics.add.group();
+
+      this.time.addEvent({
+        delay: 1000, loop: true,
+        callback: () => {
+          const x = Phaser.Math.Between(50, config.width - 50);
+          let enemy = enemies.create(x, -30, 'enemy');
+          enemy.setVelocityY(100);
+        }
+      });
+
+      this.physics.add.overlap(bullets, enemies, (b, e) => { b.destroy(); killEnemy(e); });
+      this.physics.add.overlap(laserGroup, enemies, (l, e) => killEnemy(e));
+      this.physics.add.overlap(rocketGroup, enemies, (r, e) => {
+        e.destroy(); r.destroy(); damageArea(e.x, e.y, 80);
+      });
+      this.physics.add.overlap(player, enemies, (p, e) => {
+        e.destroy(); hp--; hpText.setText("HP: " + hp);
+        if (hp <= 0) scene.scene.restart();
+      });
+
+      hpText = this.add.text(10, 10, "HP: " + hp, { font: "18px Arial", fill: "#fff" });
+      levelText = this.add.text(10, 30, "Level: " + level, { font: "16px Arial", fill: "#0f0" });
+      expBar = this.add.graphics(); updateExpBar();
+
+      setupControls();
+    }
+
+    function update(time) {
+      if (!player.active) return;
+
+      player.setVelocity(moveX * player.speed / 100, moveY * player.speed / 100);
+
+      if (firePressed && time > lastFired) {
+        let b = bullets.get(player.x, player.y - 20, 'bullet');
+        if (b) {
+          b.setActive(true).setVisible(true);
+          b.body.enable = true;
+          b.setVelocityY(-400);
+          lastFired = time + 300;
+        }
+      }
+
+      Phaser.Actions.Call(bullets.getChildren(), b => {
+        if (b.y < -32) b.destroy();
+      });
+
+      Phaser.Actions.Call(enemies.getChildren(), e => {
+        if (e.y > config.height + 32) e.destroy();
+      });
+
+      if (laserPressed && laserReady) {
+        fireLaser(this);
+        laserReady = false;
+        setTimeout(() => laserReady = true, charStats[selectedChar].laserCooldown);
+      }
+
+      if (rocketPressed && rocketReady) {
+        fireRocket(this);
+        rocketReady = false;
+        setTimeout(() => rocketReady = true, charStats[selectedChar].rocketCooldown);
+      }
+    }
+
+    function setupControls() {
+      document.getElementById('fireBtn').ontouchstart = () => firePressed = true;
+      document.getElementById('fireBtn').ontouchend = () => firePressed = false;
+
+      document.getElementById('laserBtn').ontouchstart = () => laserPressed = true;
+      document.getElementById('laserBtn').ontouchend = () => laserPressed = false;
+
+      document.getElementById('rocketBtn').ontouchstart = () => rocketPressed = true;
+      document.getElementById('rocketBtn').ontouchend = () => rocketPressed = false;
+
+      const joy = document.getElementById('joystick');
+      let sx = 0, sy = 0;
+      joy.ontouchstart = e => {
+        sx = e.touches[0].clientX;
+        sy = e.touches[0].clientY;
+      };
+      joy.ontouchmove = e => {
+        let dx = e.touches[0].clientX - sx;
+        let dy = e.touches[0].clientY - sy;
+        moveX = Math.abs(dx) > 10 ? dx : 0;
+        moveY = Math.abs(dy) > 10 ? dy : 0;
+      };
+      joy.ontouchend = () => { moveX = 0; moveY = 0; };
+    }
+
+    function fireLaser(scene) {
+      let beam = laserGroup.create(player.x, player.y - 40, 'laser');
+      beam.setDisplaySize(6, config.height);
+      beam.setVelocityY(-1000);
+      scene.time.delayedCall(300, () => beam.destroy());
+    }
+
+    function fireRocket(scene) {
+      const enemy = enemies.getChildren().find(e => e.active);
+      if (!enemy) return;
+      let rocket = rocketGroup.create(player.x, player.y - 20, 'rocket');
+      scene.physics.moveToObject(rocket, enemy, 300);
+    }
+
+    function killEnemy(enemy) {
+      if (!enemy.active) return;
+      enemy.destroy();
+      exp += 3; updateExpBar();
+      if (exp >= nextExp) {
+        exp -= nextExp;
+        level++;
+        nextExp = Math.floor(nextExp * 1.5);
+        levelText.setText("Level: " + level);
+        updateExpBar();
+      }
+    }
+
+    function damageArea(x, y, radius) {
+      enemies.getChildren().forEach(e => {
+        if (Phaser.Math.Distance.Between(x, y, e.x, e.y) <= radius) killEnemy(e);
+      });
+    }
+
+    function updateExpBar() {
+      expBar.clear();
+      expBar.fillStyle(0x00ff00, 1);
+      const pct = Phaser.Math.Clamp(exp / nextExp, 0, 1);
+      expBar.fillRect(10, 55, 100 * pct, 8);
+      expBar.lineStyle(1, 0xffffff);
+      expBar.strokeRect(10, 55, 100, 8);
+    }
+  </script>
+</body>
+</html>
